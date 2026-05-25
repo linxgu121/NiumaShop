@@ -17,7 +17,7 @@ namespace NiumaShop.Data
         /// 模块全局修订号。
         /// 主要用于存档脏标记、调试和总览；普通商店 UI 应优先使用单商店 Revision。
         /// </summary>
-        public int Revision;
+        public long Revision;
 
         /// <summary>
         /// 所有已产生运行时事实的商店快照。

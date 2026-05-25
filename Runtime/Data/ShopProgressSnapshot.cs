@@ -24,7 +24,7 @@ namespace NiumaShop.Data
         /// 单商店修订号。
         /// 库存、限购、解锁、折扣、刷新状态变化时递增。
         /// </summary>
-        public int Revision;
+        public long Revision;
 
         /// <summary>
         /// 商品运行时快照。

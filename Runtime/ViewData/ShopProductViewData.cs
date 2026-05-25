@@ -1,5 +1,4 @@
 using System;
-using NiumaInventory.Enum;
 using NiumaShop.Enum;
 
 namespace NiumaShop.ViewData
@@ -17,8 +16,19 @@ namespace NiumaShop.ViewData
         public string DisplayName;
         public string Description;
         public string IconAddress;
-        public ItemType ItemType;
-        public ItemQuality Quality;
+
+        /// <summary>
+        /// 商品类型表现 Key。
+        /// 由服务层从背包物品定义或商店配置映射而来，ViewData 不直接暴露 Inventory 枚举。
+        /// </summary>
+        public string ItemTypeKey;
+
+        /// <summary>
+        /// 商品品质表现 Key。
+        /// UI 可根据该 Key 决定颜色、边框和排序，不直接依赖背包模块枚举。
+        /// </summary>
+        public string QualityKey;
+
         public int Count;
         public ShopPriceViewData[] Prices = Array.Empty<ShopPriceViewData>();
         public int RemainingStock;

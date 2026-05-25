@@ -22,7 +22,7 @@ namespace NiumaShop.Data
         /// 单商店修订号。
         /// UI 桥接层应优先按 ShopId 读取该值，避免全局 Revision 导致无意义刷新。
         /// </summary>
-        public int Revision;
+        public long Revision;
 
         /// <summary>
         /// 商品运行时状态。
@@ -44,7 +44,17 @@ namespace NiumaShop.Data
         /// </summary>
         public void BumpRevision()
         {
-            Revision = Revision == int.MaxValue ? 1 : Revision + 1;
+            if (Revision < 0)
+            {
+                Revision = 0;
+            }
+
+            if (Revision == long.MaxValue)
+            {
+                throw new InvalidOperationException("商店修订号已达到 long.MaxValue，无法继续递增。请检查存档数据或修订号写入逻辑。");
+            }
+
+            Revision++;
         }
 
         /// <summary>

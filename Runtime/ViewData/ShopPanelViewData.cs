@@ -11,7 +11,7 @@ namespace NiumaShop.ViewData
     [Serializable]
     public sealed class ShopPanelViewData
     {
-        public int Revision;
+        public long Revision;
         public string ShopId;
         public string DisplayName;
         public string Description;
