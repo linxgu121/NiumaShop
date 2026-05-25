@@ -18,7 +18,7 @@ namespace NiumaShop.Service
     /// 商店核心服务。
     /// 负责商店查询、购买校验、背包交易、库存限购更新和存档快照导入导出。
     /// </summary>
-    public sealed class ShopService : IShopService
+    public sealed class ShopService : IShopService, IShopConfigurationService
     {
         private const int CurrentSaveVersion = 1;
         private const string MissingKey = "missing";

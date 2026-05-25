@@ -82,7 +82,8 @@ namespace NiumaShop.Controller
         [Tooltip("调试出售数量。第一版出售功能未开放，该字段用于后续阶段预留。")]
         [SerializeField] private int debugSellCount = 1;
 
-        private ShopService _shopService;
+        private IShopService _shopService;
+        private IShopConfigurationService _shopConfigurationService;
         private GameContext _context;
         private IInventoryService _inventoryService;
         private IShopConditionResolver _conditionResolver;
@@ -96,6 +97,9 @@ namespace NiumaShop.Controller
         private bool _warnedInvalidConditionResolver;
         private bool _warnedInvalidPriceResolver;
         private bool _warnedInitializeFailure;
+        private bool _warnedServiceNotReady;
+        private bool _autoInitializeFailed;
+        private bool _isDestroyed;
 
         /// <summary>
         /// 模块名称。
@@ -182,6 +186,14 @@ namespace NiumaShop.Controller
             }
         }
 
+        private void OnDestroy()
+        {
+            UnregisterServicesFromContext();
+            IsRunning = false;
+            IsInitialized = false;
+            _isDestroyed = true;
+        }
+
         /// <summary>
         /// 初始化商店模块。
         /// 如果已有服务，会导出商店快照并在新服务中恢复，避免重复初始化丢失商店解锁、库存和限购进度。
@@ -190,6 +202,7 @@ namespace NiumaShop.Controller
         {
             var wasRunning = IsRunning;
             var previousService = _shopService;
+            var previousConfigurationService = _shopConfigurationService;
             var previousContext = _context;
             var previousInventoryService = _inventoryService;
             var previousConditionResolver = _conditionResolver;
@@ -240,9 +253,12 @@ namespace NiumaShop.Controller
                 }
 
                 _shopService = newService;
+                _shopConfigurationService = newService;
                 RegisterServicesToContext();
                 IsInitialized = true;
                 _warnedInitializeFailure = false;
+                _autoInitializeFailed = false;
+                _warnedServiceNotReady = false;
                 initializedSuccessfully = true;
             }
             catch (Exception exception)
@@ -254,7 +270,9 @@ namespace NiumaShop.Controller
                 }
 
                 RestoreRegisteredShopServices(targetContext, previousRegisteredService, previousRegisteredQuery, previousRegisteredCommand, newService);
+                DisposeServiceIfNeeded(newService);
                 _shopService = previousService;
+                _shopConfigurationService = previousConfigurationService;
                 _context = previousContext;
                 _inventoryService = previousInventoryService;
                 _conditionResolver = previousConditionResolver;
@@ -306,8 +324,10 @@ namespace NiumaShop.Controller
         public ShopAssetValidationReport SetShopAssets(ShopAsset[] assets)
         {
             shopAssets = assets ?? Array.Empty<ShopAsset>();
-            return _shopService != null
-                ? _shopService.SetShops(shopAssets, itemDefinitions, strictRegistryMode)
+            _warnedMissingShops = false;
+            _autoInitializeFailed = false;
+            return _shopConfigurationService != null
+                ? _shopConfigurationService.SetShops(shopAssets, itemDefinitions, strictRegistryMode)
                 : null;
         }
 
@@ -318,8 +338,10 @@ namespace NiumaShop.Controller
         public ShopAssetValidationReport SetItemDefinitions(ItemDefinition[] definitions)
         {
             itemDefinitions = definitions ?? Array.Empty<ItemDefinition>();
-            return _shopService != null
-                ? _shopService.SetItemDefinitions(itemDefinitions)
+            _warnedMissingItemDefinitions = false;
+            _autoInitializeFailed = false;
+            return _shopConfigurationService != null
+                ? _shopConfigurationService.SetItemDefinitions(itemDefinitions)
                 : null;
         }
 
@@ -331,9 +353,10 @@ namespace NiumaShop.Controller
         {
             _inventoryService = inventoryService;
             _inventoryServiceLocked = true;
-            if (_shopService != null)
+            _autoInitializeFailed = false;
+            if (_shopConfigurationService != null)
             {
-                _shopService.SetInventoryService(_inventoryService);
+                TryApplyExternalDependency("设置背包服务", () => _shopConfigurationService.SetInventoryService(_inventoryService));
             }
         }
 
@@ -344,9 +367,9 @@ namespace NiumaShop.Controller
         {
             _inventoryServiceLocked = false;
             _inventoryService = ResolveInventoryService(_context);
-            if (_shopService != null)
+            if (_shopConfigurationService != null)
             {
-                _shopService.SetInventoryService(_inventoryService);
+                TryApplyExternalDependency("重新解析背包服务", () => _shopConfigurationService.SetInventoryService(_inventoryService));
             }
         }
 
@@ -358,9 +381,10 @@ namespace NiumaShop.Controller
         {
             _conditionResolver = conditionResolver;
             _conditionResolverLocked = true;
-            if (_shopService != null)
+            _autoInitializeFailed = false;
+            if (_shopConfigurationService != null)
             {
-                _shopService.SetConditionResolver(_conditionResolver);
+                TryApplyExternalDependency("设置条件解析器", () => _shopConfigurationService.SetConditionResolver(_conditionResolver));
             }
         }
 
@@ -371,9 +395,9 @@ namespace NiumaShop.Controller
         {
             _conditionResolverLocked = false;
             _conditionResolver = ResolveConditionResolver(_context);
-            if (_shopService != null)
+            if (_shopConfigurationService != null)
             {
-                _shopService.SetConditionResolver(_conditionResolver);
+                TryApplyExternalDependency("重新解析条件解析器", () => _shopConfigurationService.SetConditionResolver(_conditionResolver));
             }
         }
 
@@ -385,9 +409,10 @@ namespace NiumaShop.Controller
         {
             _priceResolver = priceResolver;
             _priceResolverLocked = true;
-            if (_shopService != null)
+            _autoInitializeFailed = false;
+            if (_shopConfigurationService != null)
             {
-                _shopService.SetPriceResolver(_priceResolver);
+                TryApplyExternalDependency("设置价格解析器", () => _shopConfigurationService.SetPriceResolver(_priceResolver));
             }
         }
 
@@ -398,9 +423,9 @@ namespace NiumaShop.Controller
         {
             _priceResolverLocked = false;
             _priceResolver = ResolvePriceResolver(_context);
-            if (_shopService != null)
+            if (_shopConfigurationService != null)
             {
-                _shopService.SetPriceResolver(_priceResolver);
+                TryApplyExternalDependency("重新解析价格解析器", () => _shopConfigurationService.SetPriceResolver(_priceResolver));
             }
         }
 
@@ -409,7 +434,7 @@ namespace NiumaShop.Controller
         /// </summary>
         public long GetShopRevision(string shopId)
         {
-            return EnsureServiceReady() ? _shopService.GetRevision(shopId) : 0L;
+            return EnsureServiceReady(false) ? _shopService.GetRevision(shopId) : 0L;
         }
 
         /// <summary>
@@ -417,22 +442,29 @@ namespace NiumaShop.Controller
         /// </summary>
         public ShopPanelViewData BuildShopViewData(string shopId)
         {
-            if (!EnsureServiceReady())
+            if (!EnsureServiceReady(false))
             {
-                LastPanelViewData = new ShopPanelViewData
+                StoreResult(ShopOperationResult.Fail(
+                    shopId,
+                    null,
+                    ShopTransactionType.None,
+                    ShopFailureReason.ServiceNotReady,
+                    "商店服务未初始化。"));
+
+                if (LastPanelViewData != null)
+                {
+                    LastPanelViewData.LastOperationResult = LastOperationResult;
+                    return LastPanelViewData;
+                }
+
+                return new ShopPanelViewData
                 {
                     Revision = ShopRevision,
                     ShopId = shopId,
                     State = ShopState.None,
                     Products = Array.Empty<ShopProductViewData>(),
-                    LastOperationResult = StoreResult(ShopOperationResult.Fail(
-                        shopId,
-                        null,
-                        ShopTransactionType.None,
-                        ShopFailureReason.ServiceNotReady,
-                        "商店服务未初始化。"))
+                    LastOperationResult = LastOperationResult
                 };
-                return LastPanelViewData;
             }
 
             LastPanelViewData = _shopService.BuildShopViewData(shopId);
@@ -445,7 +477,7 @@ namespace NiumaShop.Controller
         public bool TryGetShopState(string shopId, out ShopProgressSnapshot snapshot)
         {
             snapshot = null;
-            return EnsureServiceReady() && _shopService.TryGetShopState(shopId, out snapshot);
+            return EnsureServiceReady(false) && _shopService.TryGetShopState(shopId, out snapshot);
         }
 
         /// <summary>
@@ -454,7 +486,7 @@ namespace NiumaShop.Controller
         public bool CanBuy(BuyProductRequest request, out ShopOperationResult result)
         {
             result = null;
-            if (!EnsureServiceReady())
+            if (!EnsureServiceReady(false))
             {
                 result = StoreResult(ShopOperationResult.Fail(
                     request.ShopId,
@@ -477,7 +509,7 @@ namespace NiumaShop.Controller
         public bool CanSell(SellItemRequest request, out ShopOperationResult result)
         {
             result = null;
-            if (!EnsureServiceReady())
+            if (!EnsureServiceReady(false))
             {
                 result = StoreResult(ShopOperationResult.Fail(
                     request.ShopId,
@@ -728,13 +760,13 @@ namespace NiumaShop.Controller
         [ContextMenu("NiumaShop/打印配置校验报告")]
         private void DebugPrintValidationReport()
         {
-            if (!EnsureServiceReady())
+            if (!EnsureServiceReady(false))
             {
                 Debug.LogWarning("[NiumaShop] 商店服务未就绪，无法打印配置校验报告。", this);
                 return;
             }
 
-            var report = _shopService.LastValidationReport;
+            var report = _shopConfigurationService?.LastValidationReport;
             Debug.Log($"[NiumaShop] 配置校验 IsValid={report?.IsValid ?? false}, Issues={report?.IssueCount ?? 0}, Errors={report?.HasErrors ?? false}, Warnings={report?.HasWarnings ?? false}, DuplicateShopIds={report?.HasDuplicateShopIds ?? false}", this);
         }
 
@@ -757,14 +789,33 @@ namespace NiumaShop.Controller
                 nameof(NiumaShopController));
         }
 
-        private bool EnsureServiceReady()
+        private bool EnsureServiceReady(bool allowAutoInitialize = true)
         {
-            if (!IsInitialized || _shopService == null)
+            if (_isDestroyed)
             {
-                Initialize(_context);
+                return false;
             }
 
-            return _shopService != null;
+            if (IsInitialized && _shopService != null)
+            {
+                return true;
+            }
+
+            if (!allowAutoInitialize || _autoInitializeFailed)
+            {
+                WarnServiceNotReadyOnce();
+                return false;
+            }
+
+            Initialize(_context);
+            if (_shopService != null)
+            {
+                return true;
+            }
+
+            _autoInitializeFailed = true;
+            WarnServiceNotReadyOnce();
+            return false;
         }
 
         private IInventoryService ResolveInventoryService(GameContext context)
@@ -841,9 +892,21 @@ namespace NiumaShop.Controller
                 return;
             }
 
-            _context.RegisterService<IShopService>(_shopService);
-            _context.RegisterService<IShopQuery>(_shopService);
-            _context.RegisterService<IShopCommand>(_shopService);
+            RegisterServiceSafely(_context, _shopService as IShopService, "IShopService");
+            RegisterServiceSafely(_context, _shopService as IShopQuery, "IShopQuery");
+            RegisterServiceSafely(_context, _shopService as IShopCommand, "IShopCommand");
+        }
+
+        private void UnregisterServicesFromContext()
+        {
+            if (_context == null || !registerServiceToContext || _shopService == null)
+            {
+                return;
+            }
+
+            ClearRegisteredServiceIfCurrent(_context, _shopService as IShopService, "IShopService");
+            ClearRegisteredServiceIfCurrent(_context, _shopService as IShopQuery, "IShopQuery");
+            ClearRegisteredServiceIfCurrent(_context, _shopService as IShopCommand, "IShopCommand");
         }
 
         private void RestoreRegisteredShopServices(
@@ -875,15 +938,114 @@ namespace NiumaShop.Controller
 
             if (previousService != null)
             {
-                context.RegisterService(previousService);
+                RegisterServiceSafely(context, previousService, typeof(T).Name);
                 return;
             }
 
             var currentService = context.GetService<T>();
-            if (currentService == null || ReferenceEquals(currentService, failedService))
+            if (currentService != null && ReferenceEquals(currentService, failedService))
             {
-                context.RegisterService<T>(null);
+                ClearRegisteredServiceSafely<T>(context, typeof(T).Name);
             }
+        }
+
+        private static void RegisterServiceSafely<T>(GameContext context, T service, string serviceName)
+            where T : class
+        {
+            if (context == null)
+            {
+                return;
+            }
+
+            try
+            {
+                context.RegisterService(service);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"[NiumaShop] 注册 {serviceName} 到 GameContext 失败：{exception.Message}");
+            }
+        }
+
+        private static void ClearRegisteredServiceIfCurrent<T>(GameContext context, T service, string serviceName)
+            where T : class
+        {
+            if (context == null || service == null)
+            {
+                return;
+            }
+
+            var currentService = context.GetService<T>();
+            if (ReferenceEquals(currentService, service))
+            {
+                ClearRegisteredServiceSafely<T>(context, serviceName);
+            }
+        }
+
+        private static void ClearRegisteredServiceSafely<T>(GameContext context, string serviceName)
+            where T : class
+        {
+            if (context == null)
+            {
+                return;
+            }
+
+            try
+            {
+                context.UnregisterService<T>();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"[NiumaShop] 从 GameContext 清理 {serviceName} 失败：{exception.Message}");
+            }
+        }
+
+        private static void DisposeServiceIfNeeded(object service)
+        {
+            var disposable = service as IDisposable;
+            if (disposable == null)
+            {
+                return;
+            }
+
+            try
+            {
+                disposable.Dispose();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"[NiumaShop] 释放失败的商店服务实例时出现异常：{exception.Message}");
+            }
+        }
+
+        private bool TryApplyExternalDependency(string actionName, Action action)
+        {
+            if (action == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                action();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError($"[NiumaShop] {actionName}失败：{exception.Message}", this);
+                return false;
+            }
+        }
+
+        private void WarnServiceNotReadyOnce()
+        {
+            if (_warnedServiceNotReady)
+            {
+                return;
+            }
+
+            Debug.LogWarning("[NiumaShop] 商店服务未就绪。查询接口不会隐式重新初始化，请先调用 Initialize 或检查配置。", this);
+            _warnedServiceNotReady = true;
         }
 
         private void WarnIfConfigMissing()
