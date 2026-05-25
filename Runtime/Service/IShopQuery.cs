@@ -18,6 +18,12 @@ namespace NiumaShop.Service
         long Revision { get; }
 
         /// <summary>
+        /// 最近一次导入或配置同步产生的迁移警告。
+        /// 主要用于调试旧存档和配置变更，不作为正式 UI 文案。
+        /// </summary>
+        string[] LastMigrationWarnings { get; }
+
+        /// <summary>
         /// 获取指定商店的单商店修订号。
         /// </summary>
         long GetRevision(string shopId);

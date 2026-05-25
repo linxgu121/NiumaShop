@@ -1,6 +1,7 @@
 {
   "name": "NiumaShop.Runtime",
   "references": [
+    "NiumaCore.Runtime",
     "NiumaInventory.Runtime"
   ],
   "includePlatforms": [],

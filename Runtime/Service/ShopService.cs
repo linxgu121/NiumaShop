@@ -29,11 +29,13 @@ namespace NiumaShop.Service
             new Dictionary<string, ShopRuntimeState>(StringComparer.Ordinal);
         private readonly List<ShopProductViewData> _productViewBuffer = new List<ShopProductViewData>();
         private readonly List<ShopFailureReason> _failureBuffer = new List<ShopFailureReason>();
+        private readonly List<string> _migrationWarnings = new List<string>();
 
         private IInventoryService _inventoryService;
         private IShopConditionResolver _conditionResolver;
         private IShopPriceResolver _priceResolver;
         private ShopTransactionExecutor _transactionExecutor;
+        private ItemDefinition[] _itemDefinitions;
         private long _revision;
         private bool _transactionInProgress;
 
@@ -41,6 +43,11 @@ namespace NiumaShop.Service
         /// 商店模块全局修订号。
         /// </summary>
         public long Revision => _revision;
+
+        /// <summary>
+        /// 最近一次导入或配置同步产生的迁移警告。
+        /// </summary>
+        public string[] LastMigrationWarnings => _migrationWarnings.ToArray();
 
         /// <summary>
         /// 最近一次配置注册表校验报告。
@@ -58,8 +65,9 @@ namespace NiumaShop.Service
             _inventoryService = inventoryService;
             _conditionResolver = conditionResolver;
             _priceResolver = priceResolver;
-            _itemRegistry = new ItemDefinitionRegistry(itemDefinitions);
-            _shopRegistry = new ShopRegistry(shopAssets, itemDefinitions, strictRegistryMode);
+            _itemDefinitions = CloneItemDefinitions(itemDefinitions);
+            _itemRegistry = new ItemDefinitionRegistry(_itemDefinitions);
+            _shopRegistry = new ShopRegistry(shopAssets, _itemDefinitions, strictRegistryMode);
             _transactionExecutor = new ShopTransactionExecutor(_inventoryService);
 
             if (!_shopRegistry.LastReport.IsValid)
@@ -76,6 +84,28 @@ namespace NiumaShop.Service
         {
             _inventoryService = inventoryService;
             _transactionExecutor = new ShopTransactionExecutor(_inventoryService);
+        }
+
+        /// <summary>
+        /// 同步物品定义索引。
+        /// InventoryController 热更新或重载 ItemDefinition 后，应显式调用该方法，避免商店 UI 继续显示旧图标、旧品质或旧描述。
+        /// </summary>
+        public ShopAssetValidationReport SetItemDefinitions(
+            IEnumerable<ItemDefinition> itemDefinitions,
+            bool revalidateShops = true)
+        {
+            _itemDefinitions = CloneItemDefinitions(itemDefinitions) ?? Array.Empty<ItemDefinition>();
+            _itemRegistry.SetDefinitions(_itemDefinitions);
+
+            var report = _shopRegistry.LastReport;
+            if (revalidateShops)
+            {
+                report = _shopRegistry.SetShops(_shopRegistry.GetAllShops(), _itemDefinitions, _shopRegistry.StrictMode);
+                RefreshRuntimeStatesAgainstConfig();
+            }
+
+            BumpAllRuntimeRevisions();
+            return report;
         }
 
         /// <summary>
@@ -105,10 +135,11 @@ namespace NiumaShop.Service
         {
             if (itemDefinitions != null)
             {
-                _itemRegistry.SetDefinitions(itemDefinitions);
+                _itemDefinitions = CloneItemDefinitions(itemDefinitions) ?? Array.Empty<ItemDefinition>();
+                _itemRegistry.SetDefinitions(_itemDefinitions);
             }
 
-            var report = _shopRegistry.SetShops(shopAssets, itemDefinitions, strictRegistryMode);
+            var report = _shopRegistry.SetShops(shopAssets, _itemDefinitions, strictRegistryMode);
             RefreshRuntimeStatesAgainstConfig();
             if (!report.IsValid)
             {
@@ -164,6 +195,12 @@ namespace NiumaShop.Service
             {
                 var product = shop.Products[i];
                 if (product == null || string.IsNullOrWhiteSpace(product.ProductId))
+                {
+                    continue;
+                }
+
+                var productState = FindProductState(state, product.ProductId);
+                if (productState != null && productState.State == ShopProductState.Hidden)
                 {
                     continue;
                 }
@@ -357,6 +394,7 @@ namespace NiumaShop.Service
         public void ImportSnapshots(IEnumerable<ShopProgressSnapshot> snapshots)
         {
             _runtimeStates.Clear();
+            _migrationWarnings.Clear();
             if (snapshots == null)
             {
                 BumpRevision();
@@ -365,10 +403,15 @@ namespace NiumaShop.Service
 
             foreach (var snapshot in snapshots)
             {
-                if (snapshot == null
-                    || string.IsNullOrWhiteSpace(snapshot.ShopId)
-                    || !_shopRegistry.TryGetShop(snapshot.ShopId, out var shop))
+                if (snapshot == null || string.IsNullOrWhiteSpace(snapshot.ShopId))
                 {
+                    RecordMigrationWarning("商店存档中存在空快照或空 ShopId，已跳过。");
+                    continue;
+                }
+
+                if (!_shopRegistry.TryGetShop(snapshot.ShopId, out var shop))
+                {
+                    RecordMigrationWarning($"商店存档中的 ShopId={snapshot.ShopId} 缺少当前配置，已跳过该商店进度。");
                     continue;
                 }
 
@@ -851,6 +894,7 @@ namespace NiumaShop.Service
                 var productState = FindProductState(state, productSnapshot.ProductId);
                 if (productState == null)
                 {
+                    RecordMigrationWarning($"商店 {shop.ShopId} 的存档商品 ProductId={productSnapshot.ProductId} 缺少当前配置，已跳过该商品进度。");
                     continue;
                 }
 
@@ -982,6 +1026,45 @@ namespace NiumaShop.Service
             }
 
             _revision++;
+        }
+
+        private void BumpAllRuntimeRevisions()
+        {
+            foreach (var pair in _runtimeStates)
+            {
+                pair.Value?.BumpRevision();
+            }
+
+            BumpRevision();
+        }
+
+        private void RecordMigrationWarning(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return;
+            }
+
+            _migrationWarnings.Add(message);
+        }
+
+        private static ItemDefinition[] CloneItemDefinitions(IEnumerable<ItemDefinition> itemDefinitions)
+        {
+            if (itemDefinitions == null)
+            {
+                return null;
+            }
+
+            var result = new List<ItemDefinition>();
+            foreach (var definition in itemDefinitions)
+            {
+                if (definition != null)
+                {
+                    result.Add(definition);
+                }
+            }
+
+            return result.Count > 0 ? result.ToArray() : Array.Empty<ItemDefinition>();
         }
 
         private static string MapItemTypeKey(ItemDefinition definition)
