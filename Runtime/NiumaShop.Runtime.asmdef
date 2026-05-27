@@ -2,7 +2,9 @@
   "name": "NiumaShop.Runtime",
   "references": [
     "NiumaCore.Runtime",
-    "NiumaInventory.Runtime"
+    "NiumaInventory.Runtime",
+    "NiumaInteract.Runtime",
+    "NiumaSave.Runtime"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
