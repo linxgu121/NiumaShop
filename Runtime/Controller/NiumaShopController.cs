@@ -628,6 +628,26 @@ namespace NiumaShop.Controller
         }
 
         /// <summary>
+        /// 从完整商店存档数据导入。
+        /// 该入口用于 NiumaSave，允许 Shops 为空表示当前存档没有商店运行时事实。
+        /// </summary>
+        public bool ImportSaveData(ShopSaveData saveData)
+        {
+            if (!EnsureServiceReady())
+            {
+                return false;
+            }
+
+            if (saveData == null)
+            {
+                Debug.LogWarning("[NiumaShop] ImportSaveData 收到 null，已拒绝导入。", this);
+                return false;
+            }
+
+            return _shopService.ImportSaveData(saveData);
+        }
+
+        /// <summary>
         /// 获取最近一次导入或配置同步产生的迁移警告。
         /// </summary>
         public string[] GetMigrationWarnings()

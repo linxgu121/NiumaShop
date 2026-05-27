@@ -393,32 +393,21 @@ namespace NiumaShop.Service
 
         public void ImportSnapshots(IEnumerable<ShopProgressSnapshot> snapshots)
         {
-            _runtimeStates.Clear();
-            _migrationWarnings.Clear();
-            if (snapshots == null)
+            ImportSnapshotsInternal(snapshots, false, null);
+        }
+
+        public bool ImportSaveData(ShopSaveData saveData)
+        {
+            if (saveData == null)
             {
-                BumpRevision();
-                return;
+                RecordMigrationWarning("商店存档数据为空，已拒绝导入。");
+                return false;
             }
 
-            foreach (var snapshot in snapshots)
-            {
-                if (snapshot == null || string.IsNullOrWhiteSpace(snapshot.ShopId))
-                {
-                    RecordMigrationWarning("商店存档中存在空快照或空 ShopId，已跳过。");
-                    continue;
-                }
-
-                if (!_shopRegistry.TryGetShop(snapshot.ShopId, out var shop))
-                {
-                    RecordMigrationWarning($"商店存档中的 ShopId={snapshot.ShopId} 缺少当前配置，已跳过该商店进度。");
-                    continue;
-                }
-
-                _runtimeStates[snapshot.ShopId] = MergeSnapshotWithConfig(snapshot, shop);
-            }
-
-            BumpRevision();
+            return ImportSnapshotsInternal(
+                saveData.Shops ?? Array.Empty<ShopProgressSnapshot>(),
+                true,
+                Math.Max(0L, saveData.Revision));
         }
 
         private ShopProductViewData BuildProductViewData(
@@ -875,32 +864,146 @@ namespace NiumaShop.Service
             return null;
         }
 
+        private bool ImportSnapshotsInternal(
+            IEnumerable<ShopProgressSnapshot> snapshots,
+            bool allowEmpty,
+            long? importedRevision)
+        {
+            if (!TryMaterializeSnapshots(snapshots, out var snapshotList, out var materializeError))
+            {
+                RecordMigrationWarning(materializeError);
+                return false;
+            }
+
+            if (snapshotList.Count == 0 && !allowEmpty)
+            {
+                RecordMigrationWarning("商店存档快照集合为空，已拒绝导入，避免误清空商店进度。");
+                return false;
+            }
+
+            var newStates = new Dictionary<string, ShopRuntimeState>(StringComparer.Ordinal);
+            var newWarnings = new List<string>();
+            for (var i = 0; i < snapshotList.Count; i++)
+            {
+                var snapshot = snapshotList[i];
+                if (snapshot == null || string.IsNullOrWhiteSpace(snapshot.ShopId))
+                {
+                    newWarnings.Add("商店存档中存在空快照或空 ShopId，已跳过。");
+                    continue;
+                }
+
+                if (!_shopRegistry.TryGetShop(snapshot.ShopId, out var shop))
+                {
+                    newWarnings.Add($"商店存档中的 ShopId={snapshot.ShopId} 缺少当前配置，已跳过该商店进度。");
+                    continue;
+                }
+
+                newStates[snapshot.ShopId] = MergeSnapshotWithConfig(snapshot, shop, newWarnings);
+            }
+
+            _runtimeStates.Clear();
+            foreach (var pair in newStates)
+            {
+                _runtimeStates[pair.Key] = pair.Value;
+            }
+
+            _migrationWarnings.Clear();
+            _migrationWarnings.AddRange(newWarnings);
+            if (importedRevision.HasValue)
+            {
+                _revision = importedRevision.Value;
+            }
+
+            BumpRevision();
+            return true;
+        }
+
+        private static bool TryMaterializeSnapshots(
+            IEnumerable<ShopProgressSnapshot> snapshots,
+            out List<ShopProgressSnapshot> result,
+            out string error)
+        {
+            result = null;
+            error = null;
+            if (snapshots == null)
+            {
+                error = "商店存档快照集合为空引用，已拒绝导入。";
+                return false;
+            }
+
+            try
+            {
+                result = new List<ShopProgressSnapshot>();
+                foreach (var snapshot in snapshots)
+                {
+                    result.Add(snapshot);
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = $"商店存档快照枚举失败，已拒绝导入：{ex.Message}";
+                return false;
+            }
+        }
+
         private ShopRuntimeState MergeSnapshotWithConfig(ShopProgressSnapshot snapshot, ShopAsset shop)
+        {
+            return MergeSnapshotWithConfig(snapshot, shop, _migrationWarnings);
+        }
+
+        private ShopRuntimeState MergeSnapshotWithConfig(
+            ShopProgressSnapshot snapshot,
+            ShopAsset shop,
+            List<string> migrationWarnings)
         {
             var state = CreateDefaultRuntimeState(shop);
             state.State = snapshot.State;
             state.Revision = Math.Max(0L, snapshot.Revision);
             state.ActiveDiscountIds = CloneStringArray(snapshot.ActiveDiscountIds);
             state.LastRefreshUnixSeconds = Math.Max(0L, snapshot.LastRefreshUnixSeconds);
+            var snapshotProductIds = new HashSet<string>(StringComparer.Ordinal);
+            var configChanged = false;
 
             for (var i = 0; snapshot.Products != null && i < snapshot.Products.Length; i++)
             {
                 var productSnapshot = snapshot.Products[i];
                 if (productSnapshot == null || string.IsNullOrWhiteSpace(productSnapshot.ProductId))
                 {
+                    configChanged = true;
                     continue;
                 }
 
+                snapshotProductIds.Add(productSnapshot.ProductId);
                 var productState = FindProductState(state, productSnapshot.ProductId);
                 if (productState == null)
                 {
-                    RecordMigrationWarning($"商店 {shop.ShopId} 的存档商品 ProductId={productSnapshot.ProductId} 缺少当前配置，已跳过该商品进度。");
+                    migrationWarnings?.Add($"商店 {shop.ShopId} 的存档商品 ProductId={productSnapshot.ProductId} 缺少当前配置，已跳过该商品进度。");
+                    configChanged = true;
                     continue;
                 }
 
                 productState.State = productSnapshot.State;
                 productState.RemainingStock = productSnapshot.RemainingStock;
                 productState.PurchasedCount = Math.Max(0, productSnapshot.PurchasedCount);
+            }
+
+            for (var i = 0; state.Products != null && i < state.Products.Length; i++)
+            {
+                var productState = state.Products[i];
+                if (productState != null
+                    && !string.IsNullOrWhiteSpace(productState.ProductId)
+                    && !snapshotProductIds.Contains(productState.ProductId))
+                {
+                    configChanged = true;
+                    break;
+                }
+            }
+
+            if (configChanged)
+            {
+                state.BumpRevision();
             }
 
             return state;

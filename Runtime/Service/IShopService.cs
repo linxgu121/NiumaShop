@@ -25,5 +25,11 @@ namespace NiumaShop.Service
         /// 从存档快照恢复商店运行时状态。
         /// </summary>
         void ImportSnapshots(IEnumerable<ShopProgressSnapshot> snapshots);
+
+        /// <summary>
+        /// 从完整商店存档数据恢复运行时状态。
+        /// 这是 NiumaSave 的读档入口，允许 Shops 为空表示该存档没有商店运行时事实。
+        /// </summary>
+        bool ImportSaveData(ShopSaveData saveData);
     }
 }

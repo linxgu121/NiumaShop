@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using NiumaSave.Controller;
 using NiumaSave.Data;
@@ -53,10 +54,9 @@ namespace NiumaShop.SaveBridge
 
         /// <summary>
         /// 商店数据修订号。
-        /// NiumaShop 内部使用 long Revision；这里折叠为 int 只用于 NiumaSave 现有脏标记接口的相等比较。
-        /// 完整 long Revision 会写入 ShopSaveData.Revision，不在这里截断存档事实。
+        /// NiumaShop 使用 long Revision，NiumaSave 也使用 long Provider Revision，避免折叠碰撞导致脏标记漏检。
         /// </summary>
-        public int Revision => FoldRevision(shopController != null ? shopController.ShopRevision : 0L);
+        public long Revision => shopController != null ? shopController.ShopRevision : 0L;
 
         private void Awake()
         {
@@ -95,6 +95,7 @@ namespace NiumaShop.SaveBridge
                 Revision = shopController.ShopRevision,
                 Shops = shopController.ExportSnapshots() ?? Array.Empty<ShopProgressSnapshot>()
             };
+            ValidateSaveDataForExport(saveData);
 
             var json = JsonUtility.ToJson(saveData);
             var bytes = Encoding.UTF8.GetBytes(json);
@@ -134,6 +135,13 @@ namespace NiumaShop.SaveBridge
                     $"商店存档段 ID 不匹配：expected={SectionId}, actual={section.SectionId}");
             }
 
+            if (!string.Equals(section.Format, ShopSectionFormat, StringComparison.Ordinal))
+            {
+                return SaveSectionImportResult.Fail(
+                    SaveSectionImportErrorCode.DataCorrupted,
+                    $"商店存档段格式不支持：{section.Format}");
+            }
+
             if (!string.Equals(section.DataEncoding, SaveDataEncoding.Base64, StringComparison.Ordinal))
             {
                 return SaveSectionImportResult.Fail(
@@ -154,7 +162,13 @@ namespace NiumaShop.SaveBridge
                     return readResult;
                 }
 
-                shopController.ImportSnapshots(saveData.Shops ?? Array.Empty<ShopProgressSnapshot>());
+                if (!shopController.ImportSaveData(saveData))
+                {
+                    return SaveSectionImportResult.Fail(
+                        SaveSectionImportErrorCode.ImportFailed,
+                        "商店控制器拒绝导入商店存档数据。");
+                }
+
                 LogMigrationWarningsAfterImport();
                 return SaveSectionImportResult.Success();
             }
@@ -183,12 +197,32 @@ namespace NiumaShop.SaveBridge
         private static SaveSectionImportResult TryReadVersion1(SaveSectionData section, out ShopSaveData saveData)
         {
             saveData = null;
-            var bytes = Convert.FromBase64String(section.EncodedData);
-            var json = Encoding.UTF8.GetString(bytes);
+            byte[] bytes;
+            try
+            {
+                bytes = Convert.FromBase64String(section.EncodedData);
+            }
+            catch (FormatException ex)
+            {
+                return SaveSectionImportResult.Fail(
+                    SaveSectionImportErrorCode.DataCorrupted,
+                    $"商店存档段 Base64 解码失败：{ex.Message}");
+            }
+
+            string json;
+            try
+            {
+                json = new UTF8Encoding(false, true).GetString(bytes);
+            }
+            catch (DecoderFallbackException ex)
+            {
+                return SaveSectionImportResult.Fail(
+                    SaveSectionImportErrorCode.DataCorrupted,
+                    $"商店存档段 UTF8 解码失败：{ex.Message}");
+            }
+
             saveData = JsonUtility.FromJson<ShopSaveData>(json);
-            return saveData != null
-                ? SaveSectionImportResult.Success()
-                : SaveSectionImportResult.Fail(SaveSectionImportErrorCode.DataCorrupted, "商店存档段解析结果为空。");
+            return ValidateImportedSaveData(saveData);
         }
 
         [ContextMenu("NiumaShopSave/注册到存档模块")]
@@ -278,18 +312,106 @@ namespace NiumaShop.SaveBridge
             }
         }
 
-        private static int FoldRevision(long revision)
+        private static void ValidateSaveDataForExport(ShopSaveData saveData)
         {
-            if (revision <= 0L)
+            var error = ValidateSaveData(saveData);
+            if (!string.IsNullOrWhiteSpace(error))
             {
-                return 0;
+                throw new InvalidOperationException($"商店存档导出数据无效：{error}");
+            }
+        }
+
+        private static SaveSectionImportResult ValidateImportedSaveData(ShopSaveData saveData)
+        {
+            var error = ValidateSaveData(saveData);
+            return string.IsNullOrWhiteSpace(error)
+                ? SaveSectionImportResult.Success()
+                : SaveSectionImportResult.Fail(SaveSectionImportErrorCode.DataCorrupted, $"商店存档段数据无效：{error}");
+        }
+
+        private static string ValidateSaveData(ShopSaveData saveData)
+        {
+            if (saveData == null)
+            {
+                return "解析结果为空。";
             }
 
-            unchecked
+            if (saveData.Version != 1)
             {
-                var folded = (int)(revision ^ (revision >> 32));
-                return folded != 0 ? folded : 1;
+                return $"版本字段无效：{saveData.Version}";
             }
+
+            if (saveData.Revision < 0L)
+            {
+                return $"Revision 不能为负数：{saveData.Revision}";
+            }
+
+            if (saveData.Shops == null)
+            {
+                return "Shops 字段为空引用。";
+            }
+
+            var shopIds = new HashSet<string>(StringComparer.Ordinal);
+            for (var i = 0; i < saveData.Shops.Length; i++)
+            {
+                var shop = saveData.Shops[i];
+                if (shop == null)
+                {
+                    return $"Shops[{i}] 为空。";
+                }
+
+                if (string.IsNullOrWhiteSpace(shop.ShopId))
+                {
+                    return $"Shops[{i}].ShopId 为空。";
+                }
+
+                if (!shopIds.Add(shop.ShopId))
+                {
+                    return $"重复 ShopId：{shop.ShopId}";
+                }
+
+                if (shop.Revision < 0L)
+                {
+                    return $"ShopId={shop.ShopId} 的 Revision 不能为负数：{shop.Revision}";
+                }
+
+                if (shop.Products == null)
+                {
+                    return $"ShopId={shop.ShopId} 的 Products 字段为空引用。";
+                }
+
+                var productIds = new HashSet<string>(StringComparer.Ordinal);
+                for (var j = 0; j < shop.Products.Length; j++)
+                {
+                    var product = shop.Products[j];
+                    if (product == null)
+                    {
+                        return $"ShopId={shop.ShopId} 的 Products[{j}] 为空。";
+                    }
+
+                    if (string.IsNullOrWhiteSpace(product.ProductId))
+                    {
+                        return $"ShopId={shop.ShopId} 的 Products[{j}].ProductId 为空。";
+                    }
+
+                    if (!productIds.Add(product.ProductId))
+                    {
+                        return $"ShopId={shop.ShopId} 存在重复 ProductId：{product.ProductId}";
+                    }
+
+                    if (product.RemainingStock < -1)
+                    {
+                        return $"ShopId={shop.ShopId}, ProductId={product.ProductId} 的 RemainingStock 无效：{product.RemainingStock}";
+                    }
+
+                    if (product.PurchasedCount < 0)
+                    {
+                        return $"ShopId={shop.ShopId}, ProductId={product.ProductId} 的 PurchasedCount 不能为负数：{product.PurchasedCount}";
+                    }
+                }
+            }
+
+            return null;
         }
     }
 }
