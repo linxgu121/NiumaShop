@@ -579,6 +579,23 @@ namespace NiumaShop.Controller
         }
 
         /// <summary>
+        /// 设置商店当前激活折扣。
+        /// DiscountIds 为 null、空数组或全空白数组时表示关闭该商店所有折扣。
+        /// </summary>
+        public bool SetActiveDiscounts(SetShopDiscountsRequest request)
+        {
+            return EnsureServiceReady() && _shopService.SetActiveDiscounts(request);
+        }
+
+        /// <summary>
+        /// 恢复商店配置默认折扣。
+        /// </summary>
+        public bool ResetDiscountsToDefault(ResetShopDiscountsRequest request)
+        {
+            return EnsureServiceReady() && _shopService.ResetDiscountsToDefault(request);
+        }
+
+        /// <summary>
         /// 刷新商店库存和商品运行时状态。
         /// </summary>
         public bool RefreshShop(RefreshShopRequest request)

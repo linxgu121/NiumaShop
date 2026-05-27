@@ -22,6 +22,7 @@ namespace NiumaShop.Service
     {
         private const int CurrentSaveVersion = 1;
         private const string MissingKey = "missing";
+        private const string DiscountsDisabledKey = "__discounts_disabled__";
 
         private readonly ShopRegistry _shopRegistry;
         private readonly ItemDefinitionRegistry _itemRegistry;
@@ -340,6 +341,48 @@ namespace NiumaShop.Service
             return true;
         }
 
+        public bool SetActiveDiscounts(in SetShopDiscountsRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.ShopId)
+                || !TryGetRuntimeState(request.ShopId, out var state)
+                || state == null)
+            {
+                return false;
+            }
+
+            var nextIds = NormalizeDiscountIds(request.DiscountIds);
+            if (AreStringArraysSame(state.ActiveDiscountIds, nextIds))
+            {
+                return false;
+            }
+
+            state.ActiveDiscountIds = nextIds;
+            BumpShopRevision(state);
+            return true;
+        }
+
+        public bool ResetDiscountsToDefault(in ResetShopDiscountsRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.ShopId)
+                || !TryGetRuntimeState(request.ShopId, out var state)
+                || state == null)
+            {
+                return false;
+            }
+
+            // 空数组是“使用配置默认折扣”的运行时状态。
+            // 显式关闭折扣由 SetActiveDiscounts 写入内部禁用标记，避免两个语义混在一起。
+            var defaultState = Array.Empty<string>();
+            if (AreStringArraysSame(state.ActiveDiscountIds, defaultState))
+            {
+                return false;
+            }
+
+            state.ActiveDiscountIds = defaultState;
+            BumpShopRevision(state);
+            return true;
+        }
+
         public bool RefreshShop(in RefreshShopRequest request)
         {
             if (string.IsNullOrWhiteSpace(request.ShopId)
@@ -497,8 +540,13 @@ namespace NiumaShop.Service
             AppendConditionFailures(evaluation, shop.OpenConditions, request);
             AppendConditionFailures(evaluation, product.BuyConditions, request);
 
-            evaluation.Prices = ResolveBuyPrices(shop, product, request);
-            evaluation.PriceViews = BuildPriceViews(evaluation.Prices);
+            var priceResolution = ResolveBuyPrices(shop, state, product, request);
+            evaluation.Prices = priceResolution.Prices;
+            evaluation.PriceViews = BuildPriceViews(
+                priceResolution.Prices,
+                priceResolution.BasePrices,
+                priceResolution.AppliedMultiplier,
+                priceResolution.AppliedDiscountId);
             AppendPriceFailures(evaluation);
             AppendInventoryCapacityFailure(evaluation, request, checkInventoryCapacity);
 
@@ -700,8 +748,9 @@ namespace NiumaShop.Service
             }
         }
 
-        private ShopPriceData[] ResolveBuyPrices(
+        private ShopPriceResolution ResolveBuyPrices(
             ShopAsset shop,
+            ShopRuntimeState state,
             ShopProductData product,
             in BuyProductRequest request)
         {
@@ -709,13 +758,178 @@ namespace NiumaShop.Service
                 && _priceResolver.TryResolveBuyPrices(shop, product, request, out var resolved, out _)
                 && resolved != null)
             {
-                return ClonePrices(resolved);
+                var resolvedPrices = ClonePrices(resolved);
+                return new ShopPriceResolution(resolvedPrices, ClonePrices(resolvedPrices), 1f, null);
             }
 
-            return BuildDefaultPrices(product.Prices, request.Count);
+            var basePrices = BuildDefaultPrices(product.Prices, request.Count);
+            var discount = ResolveBestDiscount(shop, state, product, request);
+            return new ShopPriceResolution(
+                ApplyDiscountMultiplier(basePrices, discount.Multiplier),
+                ClonePrices(basePrices),
+                discount.Multiplier,
+                discount.DiscountId);
         }
 
-        private ShopPriceViewData[] BuildPriceViews(ShopPriceData[] prices)
+        /// <summary>
+        /// 计算本次购买可用的最低折扣乘数。
+        /// 第一版不做连续折扣叠乘，只从满足条件的折扣中取最低价格，避免折扣叠爆。
+        /// </summary>
+        private ShopDiscountSelection ResolveBestDiscount(
+            ShopAsset shop,
+            ShopRuntimeState state,
+            ShopProductData product,
+            in BuyProductRequest request)
+        {
+            var hasMatchedDiscount = false;
+            var bestMultiplier = 1f;
+            string bestDiscountId = null;
+            for (var i = 0; shop?.DefaultDiscounts != null && i < shop.DefaultDiscounts.Length; i++)
+            {
+                var discount = shop.DefaultDiscounts[i];
+                if (!IsDiscountApplicable(discount, state, product, request))
+                {
+                    continue;
+                }
+
+                var multiplier = Mathf.Max(0f, discount.PriceMultiplier);
+                if (!hasMatchedDiscount || multiplier < bestMultiplier)
+                {
+                    hasMatchedDiscount = true;
+                    bestMultiplier = multiplier;
+                    bestDiscountId = discount.DiscountId;
+                }
+            }
+
+            return new ShopDiscountSelection(
+                hasMatchedDiscount ? bestMultiplier : 1f,
+                hasMatchedDiscount ? bestDiscountId : null);
+        }
+
+        /// <summary>
+        /// 判断折扣是否适用于当前商品和购买请求。
+        /// ActiveDiscountIds 为空时表示使用配置默认折扣；包含内部禁用标记时表示关闭全部折扣；其它非空数组只启用被剧情/任务显式激活的折扣。
+        /// </summary>
+        private bool IsDiscountApplicable(
+            ShopDiscountData discount,
+            ShopRuntimeState state,
+            ShopProductData product,
+            in BuyProductRequest request)
+        {
+            if (discount == null || product == null)
+            {
+                return false;
+            }
+
+            if (!IsDiscountRuntimeActive(discount, state)
+                || !IsDiscountTargetMatched(discount, product))
+            {
+                return false;
+            }
+
+            for (var i = 0; discount.Conditions != null && i < discount.Conditions.Length; i++)
+            {
+                var condition = discount.Conditions[i];
+                if (condition == null || condition.ConditionType == ShopConditionType.None)
+                {
+                    continue;
+                }
+
+                if (!IsConditionMet(condition, request, out _, out _))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsDiscountRuntimeActive(ShopDiscountData discount, ShopRuntimeState state)
+        {
+            if (ContainsString(state?.ActiveDiscountIds, DiscountsDisabledKey))
+            {
+                return false;
+            }
+
+            if (state?.ActiveDiscountIds == null || state.ActiveDiscountIds.Length == 0)
+            {
+                return true;
+            }
+
+            return !string.IsNullOrWhiteSpace(discount.DiscountId)
+                   && ContainsString(state.ActiveDiscountIds, discount.DiscountId);
+        }
+
+        private static bool IsDiscountTargetMatched(ShopDiscountData discount, ShopProductData product)
+        {
+            var hasProductFilter = HasAnyString(discount.ProductIds);
+            var hasTagFilter = HasAnyString(discount.ProductTags);
+            if (!hasProductFilter && !hasTagFilter)
+            {
+                return true;
+            }
+
+            return (hasProductFilter && ContainsString(discount.ProductIds, product.ProductId))
+                   || (hasTagFilter && HasAnyMatchingTag(product.Tags, discount.ProductTags));
+        }
+
+        /// <summary>
+        /// 把折扣乘数应用到已按购买份数计算后的价格上。
+        /// 正数价格使用向上取整；只有乘数显式为 0 时才会把价格变成免费。
+        /// </summary>
+        private static ShopPriceData[] ApplyDiscountMultiplier(ShopPriceData[] prices, float multiplier)
+        {
+            if (prices == null || prices.Length == 0)
+            {
+                return Array.Empty<ShopPriceData>();
+            }
+
+            if (Mathf.Approximately(multiplier, 1f))
+            {
+                return ClonePrices(prices);
+            }
+
+            var safeMultiplier = Mathf.Max(0f, multiplier);
+            var result = new List<ShopPriceData>();
+            for (var i = 0; i < prices.Length; i++)
+            {
+                var price = prices[i];
+                if (price == null || string.IsNullOrWhiteSpace(price.CurrencyItemId))
+                {
+                    continue;
+                }
+
+                result.Add(new ShopPriceData
+                {
+                    CurrencyItemId = price.CurrencyItemId,
+                    Amount = CalculateDiscountedAmount(price.Amount, safeMultiplier)
+                });
+            }
+
+            return result.ToArray();
+        }
+
+        private static int CalculateDiscountedAmount(int baseAmount, float multiplier)
+        {
+            if (baseAmount <= 0)
+            {
+                return 0;
+            }
+
+            if (multiplier <= 0f)
+            {
+                return 0;
+            }
+
+            var discounted = Mathf.CeilToInt(baseAmount * multiplier);
+            return Math.Max(1, discounted);
+        }
+
+        private ShopPriceViewData[] BuildPriceViews(
+            ShopPriceData[] prices,
+            ShopPriceData[] basePrices,
+            float appliedMultiplier,
+            string appliedDiscountId)
         {
             if (prices == null || prices.Length == 0)
             {
@@ -733,6 +947,7 @@ namespace NiumaShop.Service
 
                 _itemRegistry.TryGetDefinition(price.CurrencyItemId, out var definition);
                 var owned = _inventoryService != null ? _inventoryService.GetItemCount(price.CurrencyItemId) : 0;
+                var originalAmount = FindPriceAmount(basePrices, price.CurrencyItemId, price.Amount);
                 result.Add(new ShopPriceViewData
                 {
                     CurrencyItemId = price.CurrencyItemId,
@@ -741,6 +956,10 @@ namespace NiumaShop.Service
                         : price.CurrencyItemId,
                     IconAddress = definition != null ? definition.IconAddress : string.Empty,
                     Amount = Math.Max(0, price.Amount),
+                    OriginalAmount = Math.Max(0, originalAmount),
+                    HasPriceModifier = originalAmount != price.Amount || !Mathf.Approximately(appliedMultiplier, 1f),
+                    AppliedDiscountId = appliedDiscountId,
+                    PriceMultiplier = appliedMultiplier,
                     PlayerOwnedCount = owned,
                     IsEnough = owned >= Math.Max(0, price.Amount)
                 });
@@ -883,6 +1102,7 @@ namespace NiumaShop.Service
 
             var newStates = new Dictionary<string, ShopRuntimeState>(StringComparer.Ordinal);
             var newWarnings = new List<string>();
+            var hasConfigMigrationChange = false;
             for (var i = 0; i < snapshotList.Count; i++)
             {
                 var snapshot = snapshotList[i];
@@ -898,7 +1118,13 @@ namespace NiumaShop.Service
                     continue;
                 }
 
-                newStates[snapshot.ShopId] = MergeSnapshotWithConfig(snapshot, shop, newWarnings);
+                var mergedState = MergeSnapshotWithConfig(snapshot, shop, newWarnings);
+                if (mergedState != null && mergedState.Revision != Math.Max(0L, snapshot.Revision))
+                {
+                    hasConfigMigrationChange = true;
+                }
+
+                newStates[snapshot.ShopId] = mergedState;
             }
 
             _runtimeStates.Clear();
@@ -914,7 +1140,13 @@ namespace NiumaShop.Service
                 _revision = importedRevision.Value;
             }
 
-            BumpRevision();
+            // 读档导入应继承存档 Revision，不能凭空制造一次业务变更。
+            // 只有配置迁移实际修复了运行时状态时，才递增全局 Revision，让存档脏标记能感知迁移结果。
+            if (!importedRevision.HasValue || hasConfigMigrationChange)
+            {
+                BumpRevision();
+            }
+
             return true;
         }
 
@@ -1105,6 +1337,21 @@ namespace NiumaShop.Service
             return result.ToArray();
         }
 
+        private static int FindPriceAmount(ShopPriceData[] prices, string currencyItemId, int fallback)
+        {
+            for (var i = 0; prices != null && i < prices.Length; i++)
+            {
+                var price = prices[i];
+                if (price != null
+                    && string.Equals(price.CurrencyItemId, currencyItemId, StringComparison.Ordinal))
+                {
+                    return Math.Max(0, price.Amount);
+                }
+            }
+
+            return Math.Max(0, fallback);
+        }
+
         private void BumpShopRevision(ShopRuntimeState state)
         {
             if (state == null)
@@ -1272,6 +1519,94 @@ namespace NiumaShop.Service
             return value > int.MaxValue ? int.MaxValue : (int)value;
         }
 
+        private static bool HasAnyString(string[] values)
+        {
+            for (var i = 0; values != null && i < values.Length; i++)
+            {
+                if (!string.IsNullOrWhiteSpace(values[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ContainsString(string[] values, string target)
+        {
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                return false;
+            }
+
+            for (var i = 0; values != null && i < values.Length; i++)
+            {
+                if (string.Equals(values[i], target, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasAnyMatchingTag(string[] productTags, string[] discountTags)
+        {
+            for (var i = 0; productTags != null && i < productTags.Length; i++)
+            {
+                if (ContainsString(discountTags, productTags[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string[] NormalizeDiscountIds(string[] discountIds)
+        {
+            if (discountIds == null || discountIds.Length == 0)
+            {
+                return new[] { DiscountsDisabledKey };
+            }
+
+            var result = new List<string>();
+            for (var i = 0; i < discountIds.Length; i++)
+            {
+                var discountId = discountIds[i];
+                if (string.IsNullOrWhiteSpace(discountId)
+                    || string.Equals(discountId, DiscountsDisabledKey, StringComparison.Ordinal)
+                    || result.Contains(discountId))
+                {
+                    continue;
+                }
+
+                result.Add(discountId);
+            }
+
+            return result.Count > 0 ? result.ToArray() : new[] { DiscountsDisabledKey };
+        }
+
+        private static bool AreStringArraysSame(string[] left, string[] right)
+        {
+            var leftLength = left?.Length ?? 0;
+            var rightLength = right?.Length ?? 0;
+            if (leftLength != rightLength)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < leftLength; i++)
+            {
+                if (!string.Equals(left[i], right[i], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         private static string[] CloneStringArray(string[] source)
         {
             if (source == null || source.Length == 0)
@@ -1389,6 +1724,38 @@ namespace NiumaShop.Service
                 var result = new ShopFailureReason[source.Length - start];
                 Array.Copy(source, start, result, 0, result.Length);
                 return result;
+            }
+        }
+
+        private readonly struct ShopPriceResolution
+        {
+            public readonly ShopPriceData[] Prices;
+            public readonly ShopPriceData[] BasePrices;
+            public readonly float AppliedMultiplier;
+            public readonly string AppliedDiscountId;
+
+            public ShopPriceResolution(
+                ShopPriceData[] prices,
+                ShopPriceData[] basePrices,
+                float appliedMultiplier,
+                string appliedDiscountId)
+            {
+                Prices = prices ?? Array.Empty<ShopPriceData>();
+                BasePrices = basePrices ?? Array.Empty<ShopPriceData>();
+                AppliedMultiplier = appliedMultiplier;
+                AppliedDiscountId = appliedDiscountId;
+            }
+        }
+
+        private readonly struct ShopDiscountSelection
+        {
+            public readonly float Multiplier;
+            public readonly string DiscountId;
+
+            public ShopDiscountSelection(float multiplier, string discountId)
+            {
+                Multiplier = multiplier;
+                DiscountId = discountId;
             }
         }
     }

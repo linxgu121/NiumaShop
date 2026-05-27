@@ -32,6 +32,17 @@ namespace NiumaShop.Service
         bool SetProductUnlocked(in UnlockShopProductRequest request);
 
         /// <summary>
+        /// 设置商店当前激活折扣。
+        /// DiscountIds 为 null、空数组或全空白数组时表示关闭该商店所有折扣。
+        /// </summary>
+        bool SetActiveDiscounts(in SetShopDiscountsRequest request);
+
+        /// <summary>
+        /// 恢复商店配置默认折扣。
+        /// </summary>
+        bool ResetDiscountsToDefault(in ResetShopDiscountsRequest request);
+
+        /// <summary>
         /// 刷新商店库存和商品运行时状态。
         /// 第一版只恢复静态默认值，后续可接时间、剧情或活动刷新规则。
         /// </summary>

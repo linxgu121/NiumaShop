@@ -36,7 +36,7 @@ namespace NiumaShop.Config
         [Tooltip("打开商店需要满足的条件。")]
         public ShopConditionData[] OpenConditions = Array.Empty<ShopConditionData>();
 
-        [Tooltip("默认折扣列表。第一版只冻结配置，实际价格解析由后续 IShopPriceResolver 或 ShopService 实现。")]
+        [Tooltip("默认折扣列表。ShopService 第一版会按条件取最低折扣价；复杂活动价可由 IShopPriceResolver 覆盖。")]
         public ShopDiscountData[] DefaultDiscounts = Array.Empty<ShopDiscountData>();
     }
 }

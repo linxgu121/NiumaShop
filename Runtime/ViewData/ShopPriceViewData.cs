@@ -29,6 +29,29 @@ namespace NiumaShop.ViewData
         public int Amount;
 
         /// <summary>
+        /// 未应用折扣或涨价前的原始数量。
+        /// UI 可用它显示划线原价；等于 Amount 时表示没有价格修正。
+        /// </summary>
+        public int OriginalAmount;
+
+        /// <summary>
+        /// 是否应用了折扣或涨价倍率。
+        /// </summary>
+        public bool HasPriceModifier;
+
+        /// <summary>
+        /// 当前命中的折扣 ID。
+        /// 为空表示没有折扣，或价格由外部 IShopPriceResolver 完全接管。
+        /// </summary>
+        public string AppliedDiscountId;
+
+        /// <summary>
+        /// 实际使用的价格倍率。
+        /// 1 表示原价，小于 1 表示打折，大于 1 表示涨价。
+        /// </summary>
+        public float PriceMultiplier = 1f;
+
+        /// <summary>
         /// 玩家当前拥有数量。
         /// </summary>
         public int PlayerOwnedCount;
