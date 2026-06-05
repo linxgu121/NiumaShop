@@ -18,7 +18,7 @@ namespace NiumaShop.Bridge
         [Tooltip("商店模块根控制器。请拖入场景中的 NiumaShopController；为空时可按配置自动查找。")]
         [SerializeField] private NiumaShopController shopController;
 
-        [Tooltip("实现 IShopUIReceiver 的 UI 组件。桥接层会把整理后的商店表现数据交给它显示。")]
+        [Tooltip("商店面板 UI 脚本。拖团队制作的 Shop 面板脚本；该脚本负责显示商品列表、价格、购买按钮和提示。当前模块未内置正式面板，未制作 UI 时可留空。")]
         [SerializeField] private MonoBehaviour shopUIReceiverProvider;
 
         [Header("自动查找")]
@@ -541,7 +541,7 @@ namespace NiumaShop.Bridge
             var receiver = shopUIReceiverProvider as IShopUIReceiver;
             if (receiver == null && logWarnings && logMissing && shopUIReceiverProvider != null)
             {
-                Debug.LogWarning("[NiumaShopUIBridge] Shop UI Receiver Provider 没有实现 IShopUIReceiver。", this);
+                Debug.LogWarning("[NiumaShopUIBridge] Shop UI Receiver 绑定的不是商店面板脚本，请拖团队制作的 Shop 面板脚本。", this);
             }
 
             return receiver;

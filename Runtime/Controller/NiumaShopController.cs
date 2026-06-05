@@ -40,13 +40,13 @@ namespace NiumaShop.Controller
         [SerializeField] private bool resolveInventoryFromContext = true;
 
         [Header("外部条件与价格")]
-        [Tooltip("外部条件解析组件。该组件必须实现 IShopConditionResolver；可为空，第一版只内置通用条件。")]
+        [Tooltip("商店外部条件脚本。需要任务、剧情、声望等解锁条件时，拖对应的 ShopConditionResolver；只用基础库存和限购时可留空。")]
         [SerializeField] private MonoBehaviour conditionResolverBehaviour;
 
         [Tooltip("初始化时是否尝试从 GameContext 解析 IShopConditionResolver。使用统一模块启动器时建议开启。")]
         [SerializeField] private bool resolveConditionResolverFromContext = true;
 
-        [Tooltip("外部价格解析组件。该组件必须实现 IShopPriceResolver；可为空，服务会回退到商品基础价格。")]
+        [Tooltip("商店价格脚本。需要折扣、声望价或活动价时，拖对应的 ShopPriceResolver；只用商品基础价格时可留空。")]
         [SerializeField] private MonoBehaviour priceResolverBehaviour;
 
         [Tooltip("初始化时是否尝试从 GameContext 解析 IShopPriceResolver。使用统一模块启动器时建议开启。")]
@@ -881,7 +881,7 @@ namespace NiumaShop.Controller
 
                 if (!_warnedInvalidConditionResolver)
                 {
-                    Debug.LogWarning("[NiumaShop] conditionResolverBehaviour 未实现 IShopConditionResolver。", this);
+                    Debug.LogWarning("[NiumaShop] ConditionResolver 绑定的不是商店条件脚本；只用基础库存和限购时可留空。", this);
                     _warnedInvalidConditionResolver = true;
                 }
             }
@@ -904,7 +904,7 @@ namespace NiumaShop.Controller
 
                 if (!_warnedInvalidPriceResolver)
                 {
-                    Debug.LogWarning("[NiumaShop] priceResolverBehaviour 未实现 IShopPriceResolver。", this);
+                    Debug.LogWarning("[NiumaShop] PriceResolver 绑定的不是商店价格脚本；只用商品基础价格时可留空。", this);
                     _warnedInvalidPriceResolver = true;
                 }
             }
