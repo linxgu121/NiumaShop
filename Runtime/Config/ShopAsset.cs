@@ -8,7 +8,7 @@ namespace NiumaShop.Config
     /// 商店静态配置资源。
     /// 只描述商店可卖什么、初始规则是什么，不保存玩家运行时购买进度。
     /// </summary>
-    [CreateAssetMenu(fileName = "ShopAsset", menuName = "Niuma/Shop/Shop Asset")]
+    [CreateAssetMenu(fileName = "ShopAsset", menuName = "NiumaShop/Shop Asset")]
     public sealed class ShopAsset : ScriptableObject
     {
         [Tooltip("商店稳定 ID。正式内容必须填写，不能依赖资源文件名。")]
