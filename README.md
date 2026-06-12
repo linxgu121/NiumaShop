@@ -68,6 +68,26 @@ Shop 不管理背包内部格子，不决定装备属性，也不做合成。它
 | `Receiver Provider` | 拖商店 UI 接收脚本 | 不可以 | 商品列表无处显示 |
 | `Current Shop Id` | 填默认打开商店 ID | 可以 | 留空时需要外部调用 OpenShop |
 
+### ShopToolkitReceiver
+建议挂载位置：`CoreScene/BootstrapRoot/UIRoot/UIBridges/ShopToolkitReceiver`。
+
+用途：UI Toolkit 商店面板接收端。把 `ShopUIViewBridge` 生成的 `ShopUIUpdate` 推给 `UIToolkitUIManager` 的 `ShopPanel` View。
+
+推荐绑定：
+
+1. 在 `UIRoot/UIBridges` 下创建 `ShopToolkitReceiver` 物体。
+2. 挂 `ShopToolkitReceiver`。
+3. `UI Manager` 拖 `UIRoot/UIManager` 上的 `UIToolkitUIManager`。
+4. `Shop View Id` 默认 `ShopPanel`，要和 `UIToolkitViewRegistrySO` 里的 ViewId 一致。
+5. 把 `ShopToolkitReceiver` 拖到 `ShopUIViewBridge.Shop UI Receiver Provider`。
+
+| 字段 | 怎么填 | 可否留空 | 不填会怎样 |
+| --- | --- | --- | --- |
+| `UI Manager` | 拖 `UIToolkitUIManager` | 不建议 | 会尝试自动查找，失败则商店 Toolkit UI 不刷新 |
+| `Shop View Id` | 填 `ShopPanel` 或你注册的商店 ViewId | 不建议 | ViewId 不匹配时窗口打不开 |
+| `Auto Open View` | 打开商店时建议开启 | 可以 | 关闭后需要外部先打开 `ShopPanel` |
+| `Close On Cleared` | 建议开启 | 可以 | 当前商店被清空时窗口不会自动关闭 |
+
 ### ShopInteractable
 建议挂载位置：商店 NPC 或柜台物体。
 
@@ -78,3 +98,17 @@ Shop 不管理背包内部格子，不决定装备属性，也不做合成。它
 | `Require Unlocked Shop` | 未解锁商店不可打开时开启 | 可以 | 关闭后只要交互就能打开 |
 
 
+
+### ShopToolkitBindingProvider
+建议挂载位置：CoreScene/BootstrapRoot/UIRoot/UIToolkitRoot/BindingProviders/ShopBindingProvider。
+
+用途：把 ShopToolkitReceiver 推给 ShopPanel 的 ShopUIUpdate 渲染到 UXML。没有它，商店窗口会打开但商品列表为空。
+
+| 字段 | 怎么填 | 可否留空 | 不填会怎样 |
+| --- | --- | --- | --- |
+| Provider Id | 默认 ShopPanel，与 Registry 的 BindingProviderId 一致 | 不建议 | 不匹配时回退空 Binding |
+| List Root Name | 商品列表容器，默认 ListRoot | 可以 | 不显示商品列表 |
+| Detail Label Name | 选中商品详情，默认 DetailText | 可以 | 不显示商品详情 |
+| Result Label Name | 购买结果，默认 ResultText | 可以 | 不显示购买反馈 |
+
+UXML 至少建议包含：TitleText、StatusText、ListRoot、DetailText、ResultText、EmptyRoot。
