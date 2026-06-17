@@ -112,3 +112,13 @@ Shop 不管理背包内部格子，不决定装备属性，也不做合成。它
 | Result Label Name | 购买结果，默认 ResultText | 可以 | 不显示购买反馈 |
 
 UXML 至少建议包含：TitleText、StatusText、ListRoot、DetailText、ResultText、EmptyRoot。
+
+## 配置资产粒度基准
+
+NiumaShop 按“一个商店一个资产”管理。
+
+- `ShopAsset`：一个商店、一个兑换处或一个限时商店一个资产，例如铁匠铺、药店、小游戏奖励兑换商店。
+- 商品引用 `ItemDefinition`，不要在商店资产中重新定义物品。
+- 商店库存容器继续引用 `InventoryContainerConfig`。
+
+商店解锁状态、商品购买次数、动态折扣启停属于运行时状态和存档，不写进 `ShopAsset` 的静态配置。
